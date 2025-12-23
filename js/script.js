@@ -69,29 +69,47 @@ document.addEventListener('DOMContentLoaded', () => {
         ]
     };
 
-    // --- Core Logic ---
+    // --- Core Logic (Firebase with Fallback) ---
 
-    // 1. Load Data
-    let nomineesData = JSON.parse(localStorage.getItem('afroAwardsNominees')) || {};
+    // 1. Check Configuration validity
+    const isFirebaseConfigured = firebaseConfig.apiKey !== "YOUR_API_KEY";
 
-    // Check if we need to seed defaults (if empty OR missing categories)
-    let dataUpdated = false;
-    if (Object.keys(nomineesData).length === 0) {
-        nomineesData = defaultNominees;
-        dataUpdated = true;
-    } else {
-        // Ensure all default categories exist, but DO NOT re-add deleted individual nominees
-        for (const [key, defaults] of Object.entries(defaultNominees)) {
-            if (!nomineesData[key]) {
-                // Missing category - add whole
-                nomineesData[key] = defaults;
-                dataUpdated = true;
+    // Initial Render with Defaults (Instant Load)
+    // We start with defaults to ensure UI is never empty while waiting for DB
+    let nomineesData = defaultNominees;
+    renderNominees();
+
+    if (isFirebaseConfigured) {
+        // 2. Listen for Nominees Data if configured
+        const nomineesRef = db.ref('nominees');
+        const votesRef = db.ref('votes');
+        let voteCounts = {};
+
+        nomineesRef.on('value', (snapshot) => {
+            const data = snapshot.val();
+            if (!data) {
+                // If DB is empty, seed defaults
+                console.log("Database empty, seeding defaults...");
+                seedDefaults();
+            } else {
+                nomineesData = data;
+                renderNominees();
+                refreshStats();
             }
-        }
-    }
+        });
 
-    if (dataUpdated) {
-        localStorage.setItem('afroAwardsNominees', JSON.stringify(nomineesData));
+        votesRef.on('value', (snapshot) => {
+            voteCounts = snapshot.val() || {};
+            refreshStats();
+        });
+
+        function seedDefaults() {
+            nomineesData = defaultNominees;
+            nomineesRef.set(defaultNominees);
+        }
+    } else {
+        console.warn("Firebase not configured. Using local defaults.");
+        // We could optionally show a banner here
     }
 
     // 2. Render Functions
@@ -107,11 +125,13 @@ document.addEventListener('DOMContentLoaded', () => {
             // Clear existing content safely
             grid.innerHTML = '';
 
-            nominees.forEach(nom => {
+            const list = Array.isArray(nominees) ? nominees : [];
+
+            list.forEach((nom, index) => { // Added index for tracking if needed
                 const card = document.createElement('div');
                 card.className = 'nominee-card';
                 card.dataset.category = categoryKey;
-                card.dataset.nominee = nom.name; // Keep name as ID for simplicity as per previous logic
+                card.dataset.nominee = nom.name;
 
                 // Avatar Background
                 const hasImageClass = nom.image ? 'has-image' : '';
@@ -122,7 +142,6 @@ document.addEventListener('DOMContentLoaded', () => {
                         <h4>${nom.name}</h4>
                         ${nom.subText ? `<p class="sub-text">${nom.subText}</p>` : ''}
                         
-                        <!-- Stats Placeholder (will be filled by update logic) -->
                         <div class="vote-stats">
                             <div class="vote-progress-bg">
                                 <div class="vote-progress-fill" style="width: 0%"></div>
@@ -137,22 +156,20 @@ document.addEventListener('DOMContentLoaded', () => {
                     </div>
                 `;
 
-                // Set background image safely
                 if (nom.image) {
                     card.querySelector('.nominee-avatar').style.backgroundImage = `url('${nom.image}')`;
                     card.querySelector('.nominee-avatar').style.backgroundSize = 'cover';
                     card.querySelector('.nominee-avatar').style.backgroundPosition = 'center';
                 }
 
-                // Add click listener
                 card.addEventListener('click', () => handleVote(card));
                 grid.appendChild(card);
             });
         }
-    }
 
-    // Run Render
-    renderNominees();
+        // Restore local user selection state (visual only)
+        restoreUserVotes();
+    }
 
     // --- Global Elements ---
     const searchInput = document.getElementById('searchInput');
@@ -203,19 +220,24 @@ document.addEventListener('DOMContentLoaded', () => {
             if (targetId === 'all') {
                 filterContent('');
                 searchInput.value = '';
+                // Show all sections
+                sections.forEach(sec => sec.style.display = 'block');
                 document.querySelector('#vote').scrollIntoView({ behavior: 'smooth' });
             } else {
                 searchInput.value = '';
                 filterContent('');
-                const targetSection = document.getElementById(targetId);
-                if (targetSection) {
-                    const offset = 180;
-                    const bodyRect = document.body.getBoundingClientRect().top;
-                    const elementRect = targetSection.getBoundingClientRect().top;
-                    const elementPosition = elementRect - bodyRect;
-                    const offsetPosition = elementPosition - offset;
-                    window.scrollTo({ top: offsetPosition, behavior: 'smooth' });
-                }
+
+                // Hide all sections except target
+                sections.forEach(sec => {
+                    if (sec.id === targetId) {
+                        sec.style.display = 'block';
+                    } else {
+                        sec.style.display = 'none';
+                    }
+                });
+
+                // Scroll to top of vote section to ensure visibility
+                document.querySelector('#vote').scrollIntoView({ behavior: 'smooth' });
             }
         });
     });
@@ -238,7 +260,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function filterContent(query) {
         sections.forEach(section => {
-            // Re-query dynamically as they might have changed
             const nominees = section.querySelectorAll('.nominee-card');
             const categoryTitle = section.querySelector('.category-title').textContent.toLowerCase();
             let hasVisibleNominees = false;
@@ -260,43 +281,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Voting System ---
 
-    // Clear old data for user reset (from previous step requests)
-    if (!localStorage.getItem('voteReset_v2')) {
-        localStorage.removeItem('afroAwardsCounts');
-        localStorage.removeItem('afroAwardsVotes');
-        localStorage.setItem('voteReset_v2', 'true');
-    }
-
-    // Initialize/Load Stats
-    const cards = document.querySelectorAll('.nominee-card');
-    initializeVoteSystem();
-
-    function initializeVoteSystem() {
-        let counts = JSON.parse(localStorage.getItem('afroAwardsCounts'));
-        const allCards = document.querySelectorAll('.nominee-card');
-
-        // Init counts if empty
-        if (!counts) {
-            counts = {};
-            allCards.forEach(card => {
-                const id = getNomineeId(card);
-                counts[id] = 0;
-            });
-            localStorage.setItem('afroAwardsCounts', JSON.stringify(counts));
-        }
-
-        // Restore UI State (User Votes & Stats)
-        restoreUserVotes();
-        const uniqueCategories = Object.keys(categoryMapping); // Iterate all known categories
-        uniqueCategories.forEach(cat => updateCategoryStats(cat));
-    }
-
-    function getNomineeId(card) {
-        return `${card.dataset.category}-${card.dataset.nominee}`;
+    function getNomineeId(category, name) {
+        // Create a safe database key
+        return `${category}_${name.replace(/[^a-zA-Z0-9]/g, '_')}`;
     }
 
     function handleVote(selectedCard) {
-        // Daily Vote Limit Logic
+        // 1. Check Daily Limit (Local Logic still applies for user restrictions)
         const today = new Date().toISOString().split('T')[0];
         let dailyStats = JSON.parse(localStorage.getItem('afroAwardsDailyVotes')) || { date: today, count: 0 };
 
@@ -309,40 +300,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
         const category = selectedCard.dataset.category;
         const nominee = selectedCard.dataset.nominee;
-        const nomineeId = getNomineeId(selectedCard);
+        const voteKey = getNomineeId(category, nominee);
 
-        // Check Previous
+        // 2. Check Previous Vote in Category (Local Check)
         let userVotes = JSON.parse(localStorage.getItem('afroAwardsVotes')) || {};
-        const previousNominee = userVotes[category];
-        let counts = JSON.parse(localStorage.getItem('afroAwardsCounts')) || {};
+        if (userVotes[category] === nominee) return; // Already voted for this
 
-        if (previousNominee === nominee) return; // Already voted for this
+        // 3. Increment Firebase Vote
+        // Uses transaction to ensure atomic updates
+        const specificVoteRef = db.ref(`votes/${voteKey}`);
 
-        // Valid Vote Proceeding
-        dailyStats.count++;
-        localStorage.setItem('afroAwardsDailyVotes', JSON.stringify(dailyStats));
+        specificVoteRef.transaction((current_value) => {
+            return (current_value || 0) + 1;
+        }, (error, committed, snapshot) => {
+            if (error) {
+                console.error('Vote failed abnormally!', error);
+            } else if (committed) {
+                // Success - update local usage
+                dailyStats.count++;
+                localStorage.setItem('afroAwardsDailyVotes', JSON.stringify(dailyStats));
 
-        // Update Count
-        counts[nomineeId] = (counts[nomineeId] || 0) + 1;
-        localStorage.setItem('afroAwardsCounts', JSON.stringify(counts));
+                userVotes[category] = nominee;
+                localStorage.setItem('afroAwardsVotes', JSON.stringify(userVotes));
 
-        // Update User Selection
-        const currentCategoryCards = document.querySelectorAll(`[data-category="${category}"]`);
-        currentCategoryCards.forEach(card => {
-            card.classList.remove('selected');
-            const btn = card.querySelector('.vote-btn');
-            if (btn) btn.textContent = 'Vote';
+                showToast();
+                restoreUserVotes(); // Update UI
+            }
         });
-
-        selectedCard.classList.add('selected');
-        const btn = selectedCard.querySelector('.vote-btn');
-        if (btn) btn.textContent = 'Voted';
-
-        userVotes[category] = nominee;
-        localStorage.setItem('afroAwardsVotes', JSON.stringify(userVotes));
-
-        showToast();
-        updateCategoryStats(category);
     }
 
     function restoreUserVotes() {
@@ -350,42 +334,54 @@ document.addEventListener('DOMContentLoaded', () => {
         for (const [category, nominee] of Object.entries(votes)) {
             const cards = document.querySelectorAll(`[data-category="${category}"]`);
             cards.forEach(card => {
+                const btn = card.querySelector('.vote-btn');
                 if (card.dataset.nominee === nominee) {
                     card.classList.add('selected');
-                    const btn = card.querySelector('.vote-btn');
                     if (btn) btn.textContent = 'Voted';
+                } else {
+                    card.classList.remove('selected');
+                    if (btn) btn.textContent = 'Vote';
                 }
             });
         }
     }
 
-    function updateCategoryStats(category) {
-        const categoryCards = document.querySelectorAll(`[data-category="${category}"]`);
-        let counts = JSON.parse(localStorage.getItem('afroAwardsCounts')) || {};
+    function refreshStats() {
+        // Calculate totals per category
+        const allCategories = Object.keys(nomineesData);
 
-        let totalVotes = 0;
-        categoryCards.forEach(card => {
-            const id = getNomineeId(card);
-            totalVotes += (counts[id] || 0);
-        });
+        allCategories.forEach(cat => {
+            const catNominees = nomineesData[cat] || [];
+            let totalVotes = 0;
 
-        categoryCards.forEach(card => {
-            const id = getNomineeId(card);
-            const count = counts[id] || 0;
-            let percentage = 0;
-            if (totalVotes > 0) {
-                percentage = Math.round((count / totalVotes) * 100);
-            }
+            // First pass: sum
+            catNominees.forEach(nom => {
+                const key = getNomineeId(cat, nom.name);
+                totalVotes += (voteCounts[key] || 0);
+            });
 
-            const fill = card.querySelector('.vote-progress-fill');
-            const countText = card.querySelector('.vote-count-text .count');
-            const percentText = card.querySelector('.vote-count-text .percent');
+            // Second pass: update UI
+            const catCards = document.querySelectorAll(`[data-category="${cat}"]`);
+            catCards.forEach(card => {
+                const nomName = card.dataset.nominee;
+                const key = getNomineeId(cat, nomName);
+                const count = voteCounts[key] || 0;
 
-            if (fill && countText && percentText) {
-                fill.style.width = `${percentage}%`;
-                countText.textContent = `${count} votes`;
-                percentText.textContent = `${percentage}%`;
-            }
+                let percentage = 0;
+                if (totalVotes > 0) {
+                    percentage = Math.round((count / totalVotes) * 100);
+                }
+
+                const fill = card.querySelector('.vote-progress-fill');
+                const countText = card.querySelector('.vote-count-text .count');
+                const percentText = card.querySelector('.vote-count-text .percent');
+
+                if (fill && countText && percentText) {
+                    fill.style.width = `${percentage}%`;
+                    countText.textContent = `${count} votes`;
+                    percentText.textContent = `${percentage}%`;
+                }
+            });
         });
     }
 
@@ -396,17 +392,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function exportVoteData() {
+        alert("Export now downloads Firebase data snapshot.");
         const data = {
-            counts: JSON.parse(localStorage.getItem('afroAwardsCounts') || '{}'),
-            userHistory: JSON.parse(localStorage.getItem('afroAwardsVotes') || '{}'),
-            daily: JSON.parse(localStorage.getItem('afroAwardsDailyVotes') || '{}'),
-            nominees: JSON.parse(localStorage.getItem('afroAwardsNominees') || '{}'),
+            nominees: nomineesData,
+            votes: voteCounts,
             exportedAt: new Date().toISOString()
         };
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(data, null, 2));
         const downloadAnchorNode = document.createElement('a');
         downloadAnchorNode.setAttribute("href", dataStr);
-        downloadAnchorNode.setAttribute("download", "afro_awards_data.json");
+        downloadAnchorNode.setAttribute("download", "afro_awards_firebase_export.json");
         document.body.appendChild(downloadAnchorNode);
         downloadAnchorNode.click();
         downloadAnchorNode.remove();
