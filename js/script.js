@@ -69,50 +69,75 @@ document.addEventListener('DOMContentLoaded', () => {
         ]
     };
 
-    // --- Core Logic (Firebase with Fallback) ---
+    // --- Core Logic (Supabase) ---
 
-    // 1. Check Configuration validity
-    const isFirebaseConfigured = firebaseConfig.apiKey !== "YOUR_API_KEY";
-
-    // Initial Render with Defaults (Instant Load)
-    // We start with defaults to ensure UI is never empty while waiting for DB
+    // 1. Initial Render with Defaults
     let nomineesData = defaultNominees;
-    // Load offline votes if available, otherwise empty object
-    let voteCounts = JSON.parse(localStorage.getItem('afroAwardsOfflineCount')) || {};
+    let voteCounts = {};
     renderNominees();
-    refreshStats(); // Refresh immediately to show saved counts
 
-    if (isFirebaseConfigured) {
-        // 2. Listen for Nominees Data if configured
-        const nomineesRef = db.ref('nominees');
-        const votesRef = db.ref('votes');
-        // let voteCounts = {}; // Redundant here
+    // 2. Fetch Data from Supabase
+    fetchNominees();
+    // Realtime subscription setup
+    setupRealtimeSubscription();
 
-        nomineesRef.on('value', (snapshot) => {
-            const data = snapshot.val();
-            if (!data) {
-                // If DB is empty, seed defaults
-                console.log("Database empty, seeding defaults...");
-                seedDefaults();
-            } else {
-                nomineesData = data;
-                renderNominees();
-                refreshStats();
-            }
-        });
+    async function fetchNominees() {
+        if (!supabase) return;
+        const { data, error } = await supabase
+            .from('nominees')
+            .select('*');
 
-        votesRef.on('value', (snapshot) => {
-            voteCounts = snapshot.val() || {};
-            refreshStats();
-        });
-
-        function seedDefaults() {
-            nomineesData = defaultNominees;
-            nomineesRef.set(defaultNominees);
+        if (error) {
+            console.error('Error fetching nominees:', error);
+            return;
         }
-    } else {
-        console.warn("Firebase not configured. Using local defaults.");
-        // We could optionally show a banner here
+
+        if (data && data.length > 0) {
+            // Rebuild nested structure and vote counts
+            const newNomineesData = {};
+            voteCounts = {};
+
+            data.forEach(row => {
+                if (!newNomineesData[row.category]) {
+                    newNomineesData[row.category] = [];
+                }
+                newNomineesData[row.category].push({
+                    name: row.name,
+                    subText: row.sub_text,
+                    image: row.image_url,
+                    dbId: row.id
+                });
+
+                // Track votes
+                const key = getNomineeId(row.category, row.name);
+                voteCounts[key] = row.vote_count;
+            });
+
+            // Only update data structure if we have DB data, but we might want to merge with defaults?
+            // For now, let's assume DB is source of truth after first load.
+            // If the structure is completely different, we might lose categories not in DB.
+            // Let's assume the DB was seeded from defaults.
+            nomineesData = newNomineesData;
+            renderNominees();
+            refreshStats();
+        } else {
+            console.log("Database empty. Using defaults.");
+        }
+    }
+
+    function setupRealtimeSubscription() {
+        if (!supabase) return;
+        supabase
+            .channel('public:nominees')
+            .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'nominees' }, payload => {
+                const row = payload.new;
+                const key = getNomineeId(row.category, row.name);
+                voteCounts[key] = row.vote_count;
+                refreshStats();
+            })
+            .subscribe((status) => {
+                console.log("Supabase Realtime status:", status);
+            });
     }
 
     // 2. Render Functions
@@ -130,7 +155,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
             const list = Array.isArray(nominees) ? nominees : [];
 
-            list.forEach((nom, index) => { // Added index for tracking if needed
+            list.forEach((nom, index) => {
                 const card = document.createElement('div');
                 card.className = 'nominee-card';
                 card.dataset.category = categoryKey;
@@ -169,9 +194,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 grid.appendChild(card);
             });
         }
-
-        // Restore local user selection state (visual only)
-        restoreUserVotes();
     }
 
     // --- Global Elements ---
@@ -234,6 +256,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 sections.forEach(sec => {
                     if (sec.id === targetId) {
                         sec.style.display = 'block';
+                        sec.style.display = 'block'; // duplicate check removed
                     } else {
                         sec.style.display = 'none';
                     }
@@ -289,48 +312,47 @@ document.addEventListener('DOMContentLoaded', () => {
         return `${category}_${name.replace(/[^a-zA-Z0-9]/g, '_')}`;
     }
 
-    function handleVote(selectedCard) {
-        // 1. Unlimited Voting - No daily limit check
-        // const today = new Date().toISOString().split('T')[0];
-        // let dailyStats = JSON.parse(localStorage.getItem('afroAwardsDailyVotes')) || { date: today, count: 0 };
-        // ... (Limit logic removed)
-
+    async function handleVote(selectedCard) {
         const category = selectedCard.dataset.category;
         const nominee = selectedCard.dataset.nominee;
         const voteKey = getNomineeId(category, nominee);
 
-        // Offline Mode Fallback
-        if (!isFirebaseConfigured) {
-            console.log("Offline vote (simulated):", voteKey);
+        if (supabase) {
+            // Optimistic update for UI responsiveness
             voteCounts[voteKey] = (voteCounts[voteKey] || 0) + 1;
-
-            // Persist to LocalStorage
-            localStorage.setItem('afroAwardsOfflineCount', JSON.stringify(voteCounts));
-
             refreshStats();
             showToast();
-            return;
-        }
 
-        // 3. Increment Firebase Vote
-        // Uses transaction to ensure atomic updates
-        const specificVoteRef = db.ref(`votes/${voteKey}`);
+            // Direct update via Supabase
+            const { data: curr, error: fetchError } = await supabase
+                .from('nominees')
+                .select('id, vote_count')
+                .eq('category', category)
+                .eq('name', nominee)
+                .single();
 
-        specificVoteRef.transaction((current_value) => {
-            return (current_value || 0) + 1;
-        }, (error, committed, snapshot) => {
-            if (error) {
-                console.error('Vote failed abnormally!', error);
-            } else if (committed) {
-                // Success - update local usage
-                showToast();
-                // restoreUserVotes(); // No longer needed for unlimited
+            if (curr) {
+                const newCount = (curr.vote_count || 0) + 1;
+                const { error: updateError } = await supabase
+                    .from('nominees')
+                    .update({ vote_count: newCount })
+                    .eq('id', curr.id);
+
+                if (updateError) {
+                    console.error("Vote update failed:", updateError);
+                }
+            } else {
+                if (fetchError) console.error("Fetch error during vote:", fetchError);
+                else console.warn("Nominee not found for voting:", nominee);
             }
-        });
-    }
-
-    function restoreUserVotes() {
-        // Disabled for unlimited voting mode
+        } else {
+            // Offline Fallback
+            console.log("Offline vote (simulated):", voteKey);
+            voteCounts[voteKey] = (voteCounts[voteKey] || 0) + 1;
+            localStorage.setItem('afroAwardsOfflineCount', JSON.stringify(voteCounts));
+            refreshStats();
+            showToast();
+        }
     }
 
     function refreshStats() {
@@ -388,7 +410,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function exportVoteData() {
-        alert("Export now downloads Firebase data snapshot.");
+        alert("Exporting current local data view.");
         const data = {
             nominees: nomineesData,
             votes: voteCounts,
@@ -397,7 +419,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const dataStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(data, null, 2));
         const downloadAnchorNode = document.createElement('a');
         downloadAnchorNode.setAttribute("href", dataStr);
-        downloadAnchorNode.setAttribute("download", "afro_awards_firebase_export.json");
+        downloadAnchorNode.setAttribute("download", "afro_awards_export.json");
         document.body.appendChild(downloadAnchorNode);
         downloadAnchorNode.click();
         downloadAnchorNode.remove();
@@ -440,7 +462,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     const count = voteCounts[key] || 0;
                     allNominees.push({
                         name: nom.name,
-                        category: catKey, // Use key for lookup if needed, or readable name
+                        category: catKey,
                         count: count
                     });
                 });
@@ -454,7 +476,7 @@ document.addEventListener('DOMContentLoaded', () => {
         allNominees.forEach((item, index) => {
             const row = document.createElement('tr');
 
-            // Readable Category Name Logic (Simple map or format)
+            // Readable Category Name Logic
             const catName = item.category.replace('cat-', '').replace(/-/g, ' ').toUpperCase();
 
             let rankClass = '';
