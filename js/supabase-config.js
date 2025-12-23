@@ -1,4 +1,5 @@
 
+console.log("SUPABASE CONFIG LOADED");
 // Supabase Configuration
 // Project URL: https://qwcrzqgktaastahajyhl.supabase.co
 // API Key provided by user

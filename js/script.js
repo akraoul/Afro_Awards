@@ -1,3 +1,4 @@
+console.log("SCRIPT.JS LOADED - TOP LEVEL");
 document.addEventListener('DOMContentLoaded', () => {
     // --- Data & Initialization ---
     // Mapping keys (data-category) to DOM Container IDs
@@ -93,8 +94,17 @@ document.addEventListener('DOMContentLoaded', () => {
         }
 
         if (data && data.length > 0) {
-            // Rebuild nested structure and vote counts
+            // Reset to empty structure so we only show what's in DB (assuming DB is source of truth)
+            // Or better: merge. If DB has partial data, we might lose default categories.
+            // Current approach by previous engineer: rebuild explicitly.
+
             const newNomineesData = {};
+
+            // Initialize keys from mapping to ensure sections exist
+            Object.keys(categoryMapping).forEach(cat => {
+                newNomineesData[cat] = [];
+            });
+
             voteCounts = {};
 
             data.forEach(row => {
@@ -103,8 +113,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 newNomineesData[row.category].push({
                     name: row.name,
-                    subText: row.sub_text,
-                    image: row.image_url,
+                    subText: row.sub_text, // DB: sub_text -> JS: subText
+                    image: row.image_url,  // DB: image_url -> JS: image
                     dbId: row.id
                 });
 
@@ -113,10 +123,6 @@ document.addEventListener('DOMContentLoaded', () => {
                 voteCounts[key] = row.vote_count;
             });
 
-            // Only update data structure if we have DB data, but we might want to merge with defaults?
-            // For now, let's assume DB is source of truth after first load.
-            // If the structure is completely different, we might lose categories not in DB.
-            // Let's assume the DB was seeded from defaults.
             nomineesData = newNomineesData;
             renderNominees();
             refreshStats();
@@ -208,26 +214,47 @@ document.addEventListener('DOMContentLoaded', () => {
     const toast = document.getElementById('voteToast');
 
     // --- Event Listeners ---
+    // --- Event Listeners ---
+    console.log("Setting up event listeners. Hamburger:", hamburgerBtn, "Nav:", mainNav);
+
     if (hamburgerBtn && mainNav) {
-        hamburgerBtn.addEventListener('click', () => {
+        hamburgerBtn.addEventListener('click', (e) => {
+            e.stopPropagation(); // Prevent bubbling
+            console.log("Hamburger clicked!");
             hamburgerBtn.classList.toggle('active');
             mainNav.classList.toggle('active');
         });
+
+        // Close menu when clicking outside
+        document.addEventListener('click', (e) => {
+            if (mainNav.classList.contains('active') && !mainNav.contains(e.target) && !hamburgerBtn.contains(e.target)) {
+                hamburgerBtn.classList.remove('active');
+                mainNav.classList.remove('active');
+            }
+        });
+
         document.querySelectorAll('.nav-item').forEach(link => {
             link.addEventListener('click', () => {
                 hamburgerBtn.classList.remove('active');
                 mainNav.classList.remove('active');
             });
         });
+    } else {
+        console.error("Hamburger or Nav element not found!");
     }
 
     if (filterToggleBtn && categoryNav) {
-        filterToggleBtn.addEventListener('click', () => {
+        filterToggleBtn.addEventListener('click', (e) => {
+            e.stopPropagation();
+            console.log("Filter toggle clicked!");
             categoryNav.classList.toggle('show');
             const icon = filterToggleBtn.querySelector('.icon');
-            icon.textContent = categoryNav.classList.contains('show') ? '-' : '+';
+            if (icon) icon.textContent = categoryNav.classList.contains('show') ? '-' : '+';
         });
+    } else {
+        console.error("Filter Toggle or Category Nav not found!");
     }
+
 
     if (searchInput) {
         searchInput.addEventListener('input', (e) => {
@@ -245,24 +272,26 @@ document.addEventListener('DOMContentLoaded', () => {
             if (targetId === 'all') {
                 filterContent('');
                 searchInput.value = '';
-                // Show all sections
                 sections.forEach(sec => sec.style.display = 'block');
                 document.querySelector('#vote').scrollIntoView({ behavior: 'smooth' });
             } else {
                 searchInput.value = '';
-                filterContent('');
+                // First, reset all cards in the target section to be visible (in case they were filtered by search)
+                const targetSection = document.getElementById(targetId);
+                if (targetSection) {
+                    const cards = targetSection.querySelectorAll('.nominee-card');
+                    cards.forEach(c => c.style.display = 'flex');
+                }
 
-                // Hide all sections except target
+                // Explicitly show only target, hide others
                 sections.forEach(sec => {
                     if (sec.id === targetId) {
                         sec.style.display = 'block';
-                        sec.style.display = 'block'; // duplicate check removed
                     } else {
                         sec.style.display = 'none';
                     }
                 });
 
-                // Scroll to top of vote section to ensure visibility
                 document.querySelector('#vote').scrollIntoView({ behavior: 'smooth' });
             }
         });

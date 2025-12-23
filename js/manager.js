@@ -16,78 +16,9 @@ const categories = {
     'best-athlete': "Best Athlete"
 };
 
-const defaultNominees = {
-    'best-artist-performance': [
-        { name: "Afrococoa" }, { name: "Mansa" }, { name: "Union Sacree" },
-        { name: "Motion Group" }, { name: "Manur" }, { name: "J bliz" }, { name: "cj wanted" }
-    ],
-    'best-song': [
-        { name: "Certifiee", subText: "Union Sacree" }, { name: "1960 Groove", subText: "Afrococoa" },
-        { name: "zero on zero", subText: "Mansa" }, { name: "ebelebe", subText: "cj wanted" },
-        { name: "my head", subText: "Motion" }
-    ],
-    'best-dj': [
-        { name: "Dj Anthony" }, { name: "Dj Dejavu" }, { name: "Dj djafar" },
-        { name: "Dj Escobar" }, { name: "Dj foxie" }
-    ],
-    'best-album': [
-        { name: "3 Am", subText: "Afrococoa" }, { name: "motion" }, { name: "top tier", subText: "Mansa" }
-    ],
-    'best-tiktoker': [
-        { name: "Nav" }, { name: "nathan" }, { name: "Alias" }, { name: "La fleure" },
-        { name: "certified malee" }, { name: "Rexigner" }, { name: "zamani" }, { name: "dilan" }
-    ],
-    'best-mc': [
-        { name: "Izzy" }, { name: "kartel" }, { name: "Miller" }, { name: "iceflare" }
-    ],
-    'best-male-model': [
-        { name: "Rexigner" }, { name: "walther vill" }, { name: "Michael chimaobi" }, { name: "Lory carel" }
-    ],
-    'best-female-model': [
-        { name: "monique" }, { name: "Priscilla" }, { name: "koriane" }, { name: "Dixie b" }
-    ],
-    'best-dancer': [
-        { name: "prince afro" }, { name: "Dc vibe" }, { name: "l'ovni" }, { name: "thoko" }
-    ],
-    'best-promoter': [
-        { name: "josh flex" }, { name: "dasylva" }, { name: "xclusiv tonye" },
-        { name: "olivier" }, { name: "Escausé" }, { name: "fifty" }, { name: "Yves" }
-    ],
-    'best-rap-artist': [
-        { name: "Rexigner" }, { name: "jbliz" }, { name: "no game le ghost" },
-        { name: "lafigth Rondo" }, { name: "fritz Diddy" }, { name: "Destroyer drex" },
-        { name: "KUMBA BOY" }
-    ],
-    'best-rap-song': [
-        { name: "Amiri", subText: "la figth" }, { name: "shake", subText: "rexigner" },
-        { name: "again", subText: "fritz diddy" }, { name: "hightunes", subText: "jbliz" },
-        { name: "dejavu", subText: "destroyer drex" }, { name: "Incompris", subText: "no game le ghost" }
-    ],
-    'best-athlete': [
-        { name: "Bara" }, { name: "camara" }, { name: "mpomez" }
-    ]
-};
-
-// Firebase logic reuses 'db' from firebase-config.js (initialized globally)
-let nomineesData = defaultNominees; // Start with defaults
-const isFirebaseConfigured = firebaseConfig.apiKey !== "YOUR_API_KEY";
-
-if (isFirebaseConfigured) {
-    const nomineesRef = db.ref('nominees');
-    // Listen for updates to nominees
-    nomineesRef.on('value', (snapshot) => {
-        const data = snapshot.val();
-        if (data) {
-            nomineesData = data;
-        }
-        // Only render if manager content is visible to avoid redundant updates before login
-        if (document.getElementById('managerContent') && document.getElementById('managerContent').style.display === 'block') {
-            renderManagerList();
-        }
-    });
-} else {
-    console.warn("Firebase not configured. Manager operating in local read-only mode (optimistic).");
-}
+// Initial local cache of data
+let nomineesData = {};
+let rawNominees = []; // Keep track of DB rows for IDs
 
 function checkPassword() {
     const input = document.getElementById('passwordInput').value;
@@ -100,11 +31,13 @@ function checkPassword() {
     }
 }
 
-function initManager() {
+async function initManager() {
+    console.log("Initializing Manager with Supabase...");
+
+    // Initialize Selects
     const catSelect = document.getElementById('categorySelect');
     const filterSelect = document.getElementById('filterCategory');
 
-    // Clean first to avoid duplicates if re-init
     catSelect.innerHTML = '';
     filterSelect.innerHTML = '';
 
@@ -121,10 +54,98 @@ function initManager() {
         opt2.textContent = label;
         filterSelect.appendChild(opt2);
     }
+
+    // Event Listeners for Buttons
+    const saveBtn = document.getElementById('saveBtn');
+    if (saveBtn) saveBtn.addEventListener('click', saveNomineeBtn);
+
+    const cancelBtn = document.getElementById('cancelBtn');
+    if (cancelBtn) cancelBtn.addEventListener('click', cancelEdit);
+
+    // Fetch Data
+    await fetchAndRenderNominees();
+}
+
+async function fetchAndRenderNominees() {
+    if (!supabase) {
+        console.error("Supabase client not initialized!");
+        return;
+    }
+
+    const { data, error } = await supabase
+        .from('nominees')
+        .select('*');
+
+    if (error) {
+        console.error("Error fetching nominees:", error);
+        alert("Error loading data from database.");
+        return;
+    }
+
+    rawNominees = data || [];
+    processDataForManager(rawNominees);
     renderManagerList();
 }
 
-function saveNomineeBtn() {
+function processDataForManager(dbRows) {
+    nomineesData = {};
+
+    // Initialize all categories with empty arrays
+    for (const key of Object.keys(categories)) {
+        nomineesData[key] = [];
+    }
+
+    // Populate from DB
+    dbRows.forEach(row => {
+        if (!nomineesData[row.category]) {
+            nomineesData[row.category] = []; // Safety check
+        }
+        nomineesData[row.category].push({
+            id: row.id,
+            name: row.name,
+            subText: row.sub_text,
+            image: row.image_url,
+            vote_count: row.vote_count
+        });
+    });
+}
+
+function renderManagerList() {
+    const list = document.getElementById('nomineesList');
+    const filterCat = document.getElementById('filterCategory').value;
+    list.innerHTML = '';
+
+    const nominees = nomineesData[filterCat] || [];
+
+    if (nominees.length === 0) {
+        list.innerHTML = '<div style="padding:20px; text-align:center; color:#888;">No nominees in this category.</div>';
+        return;
+    }
+
+    nominees.forEach((nom, index) => {
+        const div = document.createElement('div');
+        div.className = 'nominee-list-item';
+
+        const imgHtml = nom.image ? `<img src="${nom.image}" class="preview-img">` : `<div class="preview-img" style="display:inline-block; vertical-align:middle;"></div>`;
+
+        div.innerHTML = `
+            <div style="display:flex; align-items:center;">
+                ${imgHtml}
+                <div>
+                    <strong>${nom.name}</strong><br>
+                    <small>${nom.subText || ''}</small>
+                </div>
+            </div>
+            <div>
+                <button onclick="editNominee('${filterCat}', ${index})" class="btn-primary" style="font-size:0.8rem; padding: 5px 10px; margin-right: 5px;">Edit</button>
+                <button onclick="deleteNominee('${filterCat}', ${index})" class="btn-danger">Delete</button>
+            </div>
+        `;
+        list.appendChild(div);
+    });
+}
+
+async function saveNomineeBtn() {
     const catSelect = document.getElementById('categorySelect');
     const nameInput = document.getElementById('nomineeName');
     const subInput = document.getElementById('nomineeSub');
@@ -138,57 +159,60 @@ function saveNomineeBtn() {
 
     if (!name) return alert("Name is required");
 
-    const finalizeSave = (imageData) => {
-        let currentList = nomineesData[selectedCat] || [];
-        // Ensure array
-        if (!Array.isArray(currentList)) currentList = [];
+    // Helper to finish save after image processing
+    const finalizeSave = async (imageData) => {
+        const payload = {
+            category: selectedCat,
+            name: name,
+            sub_text: sub,
+            image_url: imageData // Note: Storing base64 directly as per legacy behavior
+        };
+
+        console.log("Attempting to save nominee:", payload);
+
+        let error = null;
 
         if (editIndex > -1) {
             // EDIT MODE
-            // 1. Remove from old location if category changed
-            if (editCategory !== selectedCat) {
-                let oldList = nomineesData[editCategory];
-                if (oldList) {
-                    oldList.splice(editIndex, 1);
-                    nomineesRef.child(editCategory).set(oldList); // Atomic update to old cat
-                }
+            const oldNominee = nomineesData[editCategory][editIndex];
+
+            const updatePayload = { ...payload };
+            if (imageData === null) {
+                delete updatePayload.image_url;
             }
 
-            // 2. Prepare new object
-            // If editing in place (same cat), get old image if null.
-            // If different cat, we need to handle image. 
-            // Simplified: We assume we have the new image or we are creating new
-            // Note: If different cat, we can't easily retrieve old image unless we fetched it before.
-            // But nomineesData[editCategory][editIndex] should still exist in memory until step 1 runs? 
-            // Actually step 1 runs async if we just called it. But we just modify local object for now?
-            // BETTER: modify nomineesData locally then set() entire object for simplicity, OR use specific paths.
+            console.log("Updating nominee ID:", oldNominee.id, "with:", updatePayload);
+            const { error: dbError } = await supabase
+                .from('nominees')
+                .update(updatePayload)
+                .eq('id', oldNominee.id);
 
-            // To be robust:
-            // Fetch old nominee data from memory before modification
-            const oldNominee = (nomineesData[editCategory] && nomineesData[editCategory][editIndex]) || {};
-            const finalImage = imageData !== null ? imageData : oldNominee.image;
-
-            const newNomineeObj = { name: name, subText: sub, image: finalImage };
-
-            if (selectedCat === editCategory) {
-                // Update in place
-                currentList[editIndex] = newNomineeObj;
-                nomineesRef.child(selectedCat).set(currentList);
-            } else {
-                // Add to new
-                currentList.push(newNomineeObj);
-                nomineesRef.child(selectedCat).set(currentList);
-            }
+            error = dbError;
 
         } else {
             // ADD MODE
-            const newNomineeObj = { name: name, subText: sub, image: imageData };
-            currentList.push(newNomineeObj);
-            nomineesRef.child(selectedCat).set(currentList);
+            payload.vote_count = 0;
+            if (imageData === null) {
+                payload.image_url = "";
+            }
+
+            console.log("Inserting new nominee:", payload);
+            const { error: dbError } = await supabase
+                .from('nominees')
+                .insert([payload]);
+
+            error = dbError;
         }
 
-        resetForm();
-        alert(editIndex > -1 ? "Nominee Updated!" : "Nominee Added!");
+        if (error) {
+            console.error("Error saving nominee:", error);
+            alert("Failed to save nominee: " + error.message);
+        } else {
+            console.log("Save successful. Refreshing list...");
+            resetForm();
+            alert(editIndex > -1 ? "Nominee Updated!" : "Nominee Added!");
+            await fetchAndRenderNominees(); // Refresh list. Added await for clarity.
+        }
     };
 
     if (fileInput.files && fileInput.files[0]) {
@@ -222,6 +246,25 @@ function editNominee(cat, index) {
     document.querySelector('.manager-container').scrollIntoView({ behavior: 'smooth' });
 }
 
+async function deleteNominee(cat, index) {
+    if (!confirm("Are you sure you want to delete this nominee? This cannot be undone.")) return;
+
+    const nominee = nomineesData[cat][index];
+    if (!nominee || !nominee.id) return;
+
+    const { error } = await supabase
+        .from('nominees')
+        .delete()
+        .eq('id', nominee.id);
+
+    if (error) {
+        console.error("Error deleting nominee:", error);
+        alert("Failed to delete nominee.");
+    } else {
+        fetchAndRenderNominees();
+    }
+}
+
 function cancelEdit() {
     resetForm();
 }
@@ -232,51 +275,11 @@ function resetForm() {
     document.getElementById('cancelBtn').style.display = "none";
     document.getElementById('currentImageMsg').style.display = "none";
 
-    document.getElementById('categorySelect').value = Object.keys(categories)[0];
+    // document.getElementById('categorySelect').value = ... keep current selection
     document.getElementById('nomineeName').value = '';
     document.getElementById('nomineeSub').value = '';
     document.getElementById('nomineePhoto').value = '';
 
     document.getElementById('editIndex').value = -1;
     document.getElementById('editCategory').value = "";
-}
-
-function deleteNominee(cat, index) {
-    const list = nomineesData[cat];
-    if (list) {
-        list.splice(index, 1);
-        nomineesRef.child(cat).set(list);
-    }
-}
-
-function renderManagerList() {
-    const list = document.getElementById('nomineesList');
-    const filterCat = document.getElementById('filterCategory').value;
-    list.innerHTML = '';
-
-    const nominees = nomineesData[filterCat] || [];
-    // Ensure array
-    const cleanNominees = Array.isArray(nominees) ? nominees : [];
-
-    cleanNominees.forEach((nom, index) => {
-        const div = document.createElement('div');
-        div.className = 'nominee-list-item';
-
-        const imgHtml = nom.image ? `<img src="${nom.image}" class="preview-img">` : `<div class="preview-img" style="display:inline-block; vertical-align:middle;"></div>`;
-
-        div.innerHTML = `
-            <div style="display:flex; align-items:center;">
-                ${imgHtml}
-                <div>
-                    <strong>${nom.name}</strong><br>
-                    <small>${nom.subText || ''}</small>
-                </div>
-            </div>
-            <div>
-                <button onclick="editNominee('${filterCat}', ${index})" class="btn-primary" style="font-size:0.8rem; padding: 5px 10px; margin-right: 5px;">Edit</button>
-                <button onclick="deleteNominee('${filterCat}', ${index})" class="btn-danger">Delete</button>
-            </div>
-        `;
-        list.appendChild(div);
-    });
 }

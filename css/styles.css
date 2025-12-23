@@ -76,7 +76,8 @@ body {
     width: 30px;
     height: 21px;
     cursor: pointer;
-    z-index: 1001;
+    z-index: 2000;
+    /* Ensure it's above everything */
 }
 
 .hamburger-menu .bar {
@@ -294,7 +295,7 @@ body {
     position: sticky;
     top: 80px;
     /* Below header */
-    z-index: 90;
+    z-index: 900;
     background: rgba(2, 11, 20, 0.95);
     padding: 20px 0;
     backdrop-filter: blur(10px);
