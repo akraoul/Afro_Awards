@@ -77,8 +77,10 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initial Render with Defaults (Instant Load)
     // We start with defaults to ensure UI is never empty while waiting for DB
     let nomineesData = defaultNominees;
-    let voteCounts = {}; // Moved to global scope for offline access
+    // Load offline votes if available, otherwise empty object
+    let voteCounts = JSON.parse(localStorage.getItem('afroAwardsOfflineCount')) || {};
     renderNominees();
+    refreshStats(); // Refresh immediately to show saved counts
 
     if (isFirebaseConfigured) {
         // 2. Listen for Nominees Data if configured
@@ -301,6 +303,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!isFirebaseConfigured) {
             console.log("Offline vote (simulated):", voteKey);
             voteCounts[voteKey] = (voteCounts[voteKey] || 0) + 1;
+
+            // Persist to LocalStorage
+            localStorage.setItem('afroAwardsOfflineCount', JSON.stringify(voteCounts));
+
             refreshStats();
             showToast();
             return;
