@@ -349,6 +349,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function refreshStats() {
         // Calculate totals per category
         const allCategories = Object.keys(nomineesData);
+        let globalTotalVotes = 0;
 
         allCategories.forEach(cat => {
             const catNominees = nomineesData[cat] || [];
@@ -357,7 +358,9 @@ document.addEventListener('DOMContentLoaded', () => {
             // First pass: sum
             catNominees.forEach(nom => {
                 const key = getNomineeId(cat, nom.name);
-                totalVotes += (voteCounts[key] || 0);
+                const val = voteCounts[key] || 0;
+                totalVotes += val;
+                globalTotalVotes += val;
             });
 
             // Second pass: update UI
@@ -383,6 +386,12 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             });
         });
+
+        // Update Global Counter
+        const globalCountEl = document.getElementById('globalVoteCount');
+        if (globalCountEl) {
+            globalCountEl.textContent = globalTotalVotes.toLocaleString();
+        }
     }
 
     function showToast() {
