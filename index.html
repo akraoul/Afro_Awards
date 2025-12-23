@@ -59,10 +59,40 @@
                         <span id="globalVoteCount" style="font-size: 1.5em; font-weight: 900; color: #fff;">0</span>
                     </div>
                 </div>
-                <a href="#vote" class="cta-btn">Vote Now</a>
+                <div style="margin-top: 20px;">
+                    <button id="viewLeaderboardBtn" class="cta-btn"
+                        style="background: transparent; border: 2px solid var(--primary-gold); margin-right: 15px;">View
+                        Leaderboard</button>
+                    <a href="#vote" class="cta-btn">Vote Now</a>
+                </div>
             </div>
         </div>
     </section>
+
+    <!-- LEADERBOARD MODAL -->
+    <div id="leaderboardModal" class="modal-overlay" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Global Leaderboard</h2>
+                <button id="closeLeaderboardBtn" class="close-btn">&times;</button>
+            </div>
+            <div class="modal-body">
+                <table class="leaderboard-table">
+                    <thead>
+                        <tr>
+                            <th>Rank</th>
+                            <th>Nominee</th>
+                            <th>Category</th>
+                            <th>Votes</th>
+                        </tr>
+                    </thead>
+                    <tbody id="leaderboardBody">
+                        <!-- Dynamic Content -->
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
 
     <main class="main-content" id="vote">
         <div class="container">

@@ -77,13 +77,14 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initial Render with Defaults (Instant Load)
     // We start with defaults to ensure UI is never empty while waiting for DB
     let nomineesData = defaultNominees;
+    let voteCounts = {}; // Moved to global scope for offline access
     renderNominees();
 
     if (isFirebaseConfigured) {
         // 2. Listen for Nominees Data if configured
         const nomineesRef = db.ref('nominees');
         const votesRef = db.ref('votes');
-        let voteCounts = {};
+        // let voteCounts = {}; // Redundant here
 
         nomineesRef.on('value', (snapshot) => {
             const data = snapshot.val();
@@ -287,24 +288,23 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function handleVote(selectedCard) {
-        // 1. Check Daily Limit (Local Logic still applies for user restrictions)
-        const today = new Date().toISOString().split('T')[0];
-        let dailyStats = JSON.parse(localStorage.getItem('afroAwardsDailyVotes')) || { date: today, count: 0 };
-
-        if (dailyStats.date !== today) dailyStats = { date: today, count: 0 };
-
-        if (dailyStats.count >= 10) {
-            alert("You have reached your daily limit of 10 votes. Please come back tomorrow!");
-            return;
-        }
+        // 1. Unlimited Voting - No daily limit check
+        // const today = new Date().toISOString().split('T')[0];
+        // let dailyStats = JSON.parse(localStorage.getItem('afroAwardsDailyVotes')) || { date: today, count: 0 };
+        // ... (Limit logic removed)
 
         const category = selectedCard.dataset.category;
         const nominee = selectedCard.dataset.nominee;
         const voteKey = getNomineeId(category, nominee);
 
-        // 2. Check Previous Vote in Category (Local Check)
-        let userVotes = JSON.parse(localStorage.getItem('afroAwardsVotes')) || {};
-        if (userVotes[category] === nominee) return; // Already voted for this
+        // Offline Mode Fallback
+        if (!isFirebaseConfigured) {
+            console.log("Offline vote (simulated):", voteKey);
+            voteCounts[voteKey] = (voteCounts[voteKey] || 0) + 1;
+            refreshStats();
+            showToast();
+            return;
+        }
 
         // 3. Increment Firebase Vote
         // Uses transaction to ensure atomic updates
@@ -317,33 +317,14 @@ document.addEventListener('DOMContentLoaded', () => {
                 console.error('Vote failed abnormally!', error);
             } else if (committed) {
                 // Success - update local usage
-                dailyStats.count++;
-                localStorage.setItem('afroAwardsDailyVotes', JSON.stringify(dailyStats));
-
-                userVotes[category] = nominee;
-                localStorage.setItem('afroAwardsVotes', JSON.stringify(userVotes));
-
                 showToast();
-                restoreUserVotes(); // Update UI
+                // restoreUserVotes(); // No longer needed for unlimited
             }
         });
     }
 
     function restoreUserVotes() {
-        const votes = JSON.parse(localStorage.getItem('afroAwardsVotes')) || {};
-        for (const [category, nominee] of Object.entries(votes)) {
-            const cards = document.querySelectorAll(`[data-category="${category}"]`);
-            cards.forEach(card => {
-                const btn = card.querySelector('.vote-btn');
-                if (card.dataset.nominee === nominee) {
-                    card.classList.add('selected');
-                    if (btn) btn.textContent = 'Voted';
-                } else {
-                    card.classList.remove('selected');
-                    if (btn) btn.textContent = 'Vote';
-                }
-            });
-        }
+        // Disabled for unlimited voting mode
     }
 
     function refreshStats() {
@@ -415,4 +396,74 @@ document.addEventListener('DOMContentLoaded', () => {
         downloadAnchorNode.click();
         downloadAnchorNode.remove();
     }
+
+    // --- Leaderboard Logic ---
+    const leaderboardBtn = document.getElementById('viewLeaderboardBtn');
+    const leaderboardModal = document.getElementById('leaderboardModal');
+    const closeLeaderboardBtn = document.getElementById('closeLeaderboardBtn');
+
+    if (leaderboardBtn && leaderboardModal && closeLeaderboardBtn) {
+        leaderboardBtn.addEventListener('click', () => {
+            renderLeaderboard();
+            leaderboardModal.style.display = 'flex';
+        });
+
+        closeLeaderboardBtn.addEventListener('click', () => {
+            leaderboardModal.style.display = 'none';
+        });
+
+        leaderboardModal.addEventListener('click', (e) => {
+            if (e.target === leaderboardModal) {
+                leaderboardModal.style.display = 'none';
+            }
+        });
+    }
+
+    function renderLeaderboard() {
+        const tbody = document.getElementById('leaderboardBody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        let allNominees = [];
+
+        // Flatten data structure
+        for (const [catKey, list] of Object.entries(nomineesData)) {
+            if (Array.isArray(list)) {
+                list.forEach(nom => {
+                    const key = getNomineeId(catKey, nom.name);
+                    const count = voteCounts[key] || 0;
+                    allNominees.push({
+                        name: nom.name,
+                        category: catKey, // Use key for lookup if needed, or readable name
+                        count: count
+                    });
+                });
+            }
+        }
+
+        // Sort Descending
+        allNominees.sort((a, b) => b.count - a.count);
+
+        // Render Top 20 (or all)
+        allNominees.forEach((item, index) => {
+            const row = document.createElement('tr');
+
+            // Readable Category Name Logic (Simple map or format)
+            const catName = item.category.replace('cat-', '').replace(/-/g, ' ').toUpperCase();
+
+            let rankClass = '';
+            if (index === 0) rankClass = 'rank-1';
+            if (index === 1) rankClass = 'rank-2';
+            if (index === 2) rankClass = 'rank-3';
+
+            row.innerHTML = `
+                <td class="${rankClass}">#${index + 1}</td>
+                <td style="font-weight:bold;">${item.name}</td>
+                <td style="font-size:0.9em; opacity:0.8;">${catName}</td>
+                <td class="${rankClass}">${item.count.toLocaleString()}</td>
+            `;
+            tbody.appendChild(row);
+        });
+    }
+
 });
